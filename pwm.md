@@ -16,6 +16,48 @@
 
 ---
 
+## 快速上手：只要記三件事
+
+**先看這一節就好。** 後面 §1 之後都是需要時再翻的參考，一次讀完會被數學淹死。
+
+九成的需求（調光、調速、調功率、發聲）用 **Timer PWM** 就夠，而它只有三個數字：
+
+```
+prescale        →  一格有多久
+timeout_ticks   →  幾格算一個週期   → 決定頻率
+threshold       →  前幾格是高電位   → 決定 duty
+```
+
+`prescale = 16` 的話：`32 MHz ÷ 16 = 2 MHz`，**一格 = 0.5 µs**。之後只要問兩個問題：
+
+1. 我要的一個週期是幾微秒？除以 0.5 → 填 `timeout_ticks`
+2. 其中要亮多久？同樣除以 0.5 → 填 `threshold`
+
+| 我要 | 週期 | `timeout_ticks` | `threshold`（50%） |
+| --- | --- | --- | --- |
+| 100 Hz | 10000 µs | 20000 | 10000 |
+| 1 kHz | 1000 µs | 2000 | 1000 |
+| 10 kHz | 100 µs | 200 | 100 |
+
+**調亮度只改 `threshold`**，頻率不用動：25% 就填 `timeout_ticks / 4`。
+
+程式碼就這樣（完整可跑版本見 §4.6）：
+
+```c
+hosal_timer_pwm_config_tick_t tick;
+tick.timeload_ticks = 0;
+tick.timeout_ticks  = 2000;   /* 1 kHz */
+tick.threshold      = 1000;   /* 50% */
+tick.phase          = 0;
+hosal_timer_pwm_start(RT_TIMER0, tick);   /* 可重複呼叫改參數，不用先 stop */
+```
+
+**什麼時候才需要讀後面那一大串？** 只有一種情況：你要**硬體自己播一整串會變化的 duty**
+（呼吸燈、燈條動畫、CPU 完全不介入）。那是 PWM 模組的 sequence controller，
+只有它做得到，代價就是 §1.3~§1.6 那些格式與位元打包。
+
+---
+
 ## 0. PWM 是要拿來幹嘛的
 
 PWM = Pulse Width Modulation，脈寬調變。**週期固定，只改「一個週期裡有多久是高電位」**（duty，佔空比）。
@@ -84,6 +126,9 @@ RT584 的 PWM 模組**三種都能做**，但介面設計明顯是為第 1 種�
 | `pwm2_src_sel` | [5:4] | 同上 |
 | `pwm3_src_sel` | [7:6] | 同上 |
 | `pwm4_src_sel` | [9:8] | 同上 |
+
+⚠ **只有 TIMER0/1/2 在這個多工器上。** 俗稱的 timer3/4（`SLOWTIMER0/1` = RM 的
+TIMER32K0/1）連 PWM 暫存器都沒有，不是 SDK 少寫。證據見 [timer.md §1.0](timer.md)。
 
 值 1/2/3 = timer 是從 [timer.c:466-484](components/platform/soc/rt584/rt584_driver/Src/timer.c#L466-L484) 讀出來的（`= timer_id + 1`）。值 0 = PWM 模組是**推論**：`pwm.c` 從頭到尾沒碰過這顆暫存器，而 PWM 模組的 4 個 example 用 reset 值就能出波形。→ 列入 §7 待確認。
 

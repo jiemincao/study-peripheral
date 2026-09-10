@@ -8,7 +8,7 @@
 | Examples | `examples/peripheral/timer/` 共 **7 個 project** |
 | Driver | [timer.c](components/platform/soc/rt584/rt584_driver/Src/timer.c) / [timer.h](components/platform/soc/rt584/rt584_driver/Inc/timer.h) |
 | HOSAL | [hosal_timer.c](components/platform/hosal/rt584_hosal/Src/hosal_timer.c) / [hosal_timer.h](components/platform/hosal/rt584_hosal/Inc/hosal_timer.h) |
-| 相關但獨立的家族 | `examples/peripheral/slow-timer/`（SLOWTIMER0/1，32kHz）、`examples/peripheral/pwm/`（獨立 PWM 周邊，非 timer PWM）→ 見 [pwm.md](pwm.md) |
+| 相關但獨立的家族 | `examples/peripheral/slow-timer/`（SLOWTIMER0/1 = RM 的 TIMER32K0/1，即俗稱的 **timer3/4**；32kHz、**無 PWM 也無 capture**，見 §1.0）、`examples/peripheral/pwm/`（獨立 PWM 周邊，非 timer PWM）→ 見 [pwm.md](pwm.md) |
 
 > ⚠ **「判定條件」一律留 `待實測`** — 未實際上機跑過的東西不推測。實測後再回填本文件。
 > ⚠ RM 章號由 docx Heading-1 出現順序推算（Introduction = Ch1），章名可信、章號請對一次實體 TOC。
@@ -27,6 +27,59 @@ Timer 是 **32-bit 上/下數計數器**，前面串一級 **10-bit prescaler**�
     RCO1M /                         └──► cap_value（輸入邊緣鎖存）                          └──► pwm_o（value_thd / pha）
     PMU)
 ```
+
+### 1.0 先分清楚：TIMER0/1/2 vs 俗稱的 timer3/4
+
+**這是最容易踩的坑**：名字看起來是同一種東西的第 4、5 顆，其實是**兩種不同的硬體**。
+
+| 你 / 客戶說的 | SDK 的 macro | RM / 中斷遮罩叫它 | struct 型別 | IRQn |
+| --- | --- | --- | --- | --- |
+| timer 0 / 1 / 2 | `TIMER0` `TIMER1` `TIMER2` | TIMER0/1/2 | `timern_t` | 1 / 2 / 3 |
+| **timer 3 / 4** | **`SLOWTIMER0` `SLOWTIMER1`** | **TIMER32K0 / TIMER32K1** | `slowtimern_t` | 4 / 5 |
+
+命名證據見 [mcu.h:441-442](components/platform/soc/rt584/rt584_driver/Inc/mcu.h#L441-L442) 的
+`TIMER32K0_INT_NONSEC` / `TIMER32K1_INT_NONSEC`。
+
+**決定性證據是暫存器排列不同**（[timer_reg.h](components/platform/soc/rt584/rt584_driver/Inc/timer_reg.h)）：
+
+```
+ timern_t  (TIMER0/1/2)                slowtimern_t  (timer3/4)
+ 0x00 load                             0x00 load
+ 0x04 value                            0x04 value
+ 0x08 control                          0x08 control
+ 0x0C clear                            0x0C clear
+ 0x10 capture_clear      ◄─┐           0x10 repeat_delay      ◄── 只有它有
+ 0x14 ch0_cap_value      ◄─┤ capture   0x14 prescale
+ 0x18 ch1_cap_value      ◄─┘           0x18 expried_value
+ 0x1C prescale                         (結束)
+ 0x20 expried_value
+ 0x24 cap_en             ◄── 含 timer_pwm_en
+ 0x28 cap_io_sel         ◄── capture 腳位選擇
+ 0x2C thd                ◄─┐ PWM
+ 0x30 pha                ◄─┘
+```
+
+慢速 timer 的暫存器**在 0x18 就結束**。`cap_en`（含 `timer_pwm_en`）、`cap_io_sel`、
+`thd`、`pha`、兩個 `ch*_cap_value` —— 這些暫存器在 timer3/4 上**物理上不存在**。
+
+| | TIMER0/1/2 | timer3/4（SLOWTIMER / TIMER32K） |
+| --- | --- | --- |
+| 一般計時 / prescale / one-shot | ✅ | ✅ |
+| **PWM 輸出** | ✅ | ❌ **無此暫存器** |
+| **Input Capture** | ✅ 2 通道 | ❌ **無此暫存器** |
+| 時脈 | 32 MHz（PERI / RCO1M / PMU 可選） | **32 kHz**（解析度 30.5 µs） |
+| 計數器寬度 | 32-bit | 32-bit |
+| 獨有功能 | — | `repeat_delay`（中斷重複延遲） |
+| 存在的理由 | 一般計時、PWM、波形量測 | **睡眠中還要計時**（32K 常開） |
+
+**兩個推論：**
+
+1. [pwm.md §1.1](pwm.md) 的 `soc_pwm_sel` 那個 2-bit 欄位只能填 0~3
+   （PWM 模組 / TIMER0 / TIMER1 / TIMER2）—— **不是 SDK 少寫，是硬體只有這四個來源**，
+   timer3/4 從來就不在 PWM 的多工器上。
+2. 要做 PWM 或量測外部波形週期，**只能用 TIMER0/1/2**。
+   timer3/4 當普通計時器仍然可用（`load` / `value` / `control` / `prescale` 都在），
+   只是不能做 PWM 和 capture。
 
 四個功能區塊：
 
